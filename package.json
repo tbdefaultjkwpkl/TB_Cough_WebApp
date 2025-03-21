@@ -11,6 +11,7 @@
   "description": "",
   "dependencies": {
     "ffmpeg-static": "^5.2.0",
+    "googleapis": "^148.0.0",
     "node-fetch": "^2.7.0",
     "node-wav": "^0.0.2"
   }

@@ -1,9 +1,34 @@
-const fetch = require('node-fetch'); // Make sure node-fetch@2 is installed.
+const fetch = require('node-fetch'); // Ensure node-fetch@2 is installed.
 const wav = require('node-wav');
 const fs = require('fs');
 const path = require('path');
 const { execSync, execFileSync } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
+
+// Import googleapis for Sheets integration.
+const { google } = require('googleapis');
+
+// Replace with your Google Sheet ID (the long string in your sheet's URL).
+const SPREADSHEET_ID = '1lPCBXw0CVThP3RA6hlyYVaseIqxzZYJRPmRDO744jVM';
+
+// Configure Google Sheets API client.
+const sheets = google.sheets('v4');
+const auth = new google.auth.GoogleAuth({
+  scopes: ['https://www.googleapis.com/auth/spreadsheets']
+});
+
+async function appendToSheet(row) {
+  const client = await auth.getClient();
+  await sheets.spreadsheets.values.append({
+    auth: client,
+    spreadsheetId: SPREADSHEET_ID,
+    range: 'Sheet1!A:C', // Assuming your sheet has columns A, B, C for Timestamp, Embedding, Label.
+    valueInputOption: 'RAW',
+    requestBody: {
+      values: [row]
+    }
+  });
+}
 
 exports.handler = async function(event, context) {
   try {
@@ -11,7 +36,7 @@ exports.handler = async function(event, context) {
       return { statusCode: 405, body: "Method Not Allowed" };
     }
 
-    // Parse the JSON payload.
+    // Parse the incoming JSON payload.
     const body = JSON.parse(event.body);
     if (!body.audioBase64) {
       throw new Error("No audio data provided.");
@@ -26,7 +51,6 @@ exports.handler = async function(event, context) {
       const tmpDir = os.tmpdir();
       const inputFile = path.join(tmpDir, `input_${Date.now()}.webm`);
       const outputFile = path.join(tmpDir, `output_${Date.now()}.wav`);
-
       fs.writeFileSync(inputFile, audioBuffer);
       try {
         execFileSync(ffmpegPath, ['-i', inputFile, outputFile]);
@@ -38,7 +62,7 @@ exports.handler = async function(event, context) {
       fs.unlinkSync(outputFile);
     }
 
-    // Decode WAV file.
+    // Decode the WAV file.
     let decoded;
     try {
       decoded = wav.decode(audioBuffer);
@@ -59,22 +83,21 @@ exports.handler = async function(event, context) {
       processedSamples = samples;
     }
 
-    // Prepare payload for the HeAR model.
-    // We use "input_array" to send an array of 32000 floats.
-    const payload = {
-      instances: [{ input_array: Array.from(processedSamples) }]
-    };
-
-    // Use your deployed HeAR endpoint from Vertex AI.
-    const hearApiUrl = "https://us-central1-aiplatform.googleapis.com/v1/projects/tb-cough-webapp/locations/us-central1/endpoints/7767518586121224192:predict";
-
-    // Obtain a Bearer token using gcloud.
+    // Obtain Bearer token using gcloud.
     let bearerToken;
     try {
       bearerToken = execSync("gcloud auth application-default print-access-token").toString().trim();
     } catch (error) {
       throw new Error("Failed to get Bearer token. Ensure Google Cloud SDK is installed and you are authenticated.");
     }
+
+    // Prepare payload for the HeAR model using "input_array".
+    const payload = {
+      instances: [{ input_array: Array.from(processedSamples) }]
+    };
+
+    // Use your active Vertex AI endpoint.
+    const hearApiUrl = "https://us-central1-aiplatform.googleapis.com/v1/projects/tb-cough-webapp/locations/us-central1/endpoints/7767518586121224192:predict";
 
     // Call the HeAR model.
     const hearResponse = await fetch(hearApiUrl, {
@@ -92,12 +115,21 @@ exports.handler = async function(event, context) {
     }
 
     const hearData = await hearResponse.json();
+    let embeddingResult = hearData.predictions;
 
-    // Return the embedding.
-    let classification = hearData.predictions;
+    // OPTIONAL: For storage, you might save a summary or the full embedding.
+    // Here we store a JSON string of the embedding.
+    const embeddingString = JSON.stringify(embeddingResult);
+    const timestamp = new Date().toISOString();
+    const label = ""; // Leave blank for now; user can add classification later.
+
+    // Append a row to the Google Sheet: [Timestamp, Embedding, Label].
+    await appendToSheet([timestamp, embeddingString, label]);
+
+    // Return the embedding result.
     return {
       statusCode: 200,
-      body: JSON.stringify({ result: classification })
+      body: JSON.stringify({ result: embeddingResult })
     };
 
   } catch (error) {
